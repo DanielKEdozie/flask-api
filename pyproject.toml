@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flask-api"
+version = "0.1.0"
+description = "Declarative SQLAlchemy 2.0+ and Marshmallow CRUD REST API resources for Flask"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "flask>=3.0.0",
+    "flask-sqlalchemy>=3.1.0",
+    "sqlalchemy>=2.0.0",
+    "marshmallow>=3.20.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["flask_api*"]
