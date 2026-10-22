@@ -65,16 +65,23 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
     def handle_create(self):
         if self.singleton and self._get_item(None) is not None:
             return self.error_response(409, message='Record already exists')
-        data = self.run_hook('before_save', request.get_json(silent=True) or {}) or {}
+        raw_data = request.get_json(silent=True) or {}
+        pre_ctx = self.build_hook_context('create', data=raw_data)
+        data = self.run_hook('before_load', raw_data, ctx=pre_ctx) or {}
         try:
             loaded = self.load_with_schema(data)
         except ValidationError as err:
             return self._validation_error(err)
         instance = self._bind_scope(self.normalize_loaded(loaded))
+        ctx = self.build_hook_context(
+            'create', item=instance, data=data, loaded=loaded
+        )
+        instance = self.run_hook('before_save', instance, data, ctx=ctx)
+        ctx.item = ctx.instance = instance
         error = self._commit('Could not create record', add=instance)
         if error:
             return error
-        instance = self.run_hook('after_save', instance)
+        instance = self.run_hook('after_save', instance, data, ctx=ctx)
         return (
             self.envelope_response(self.dump_with_schema(instance)),
             self.response_code.get('create', 201),
@@ -84,21 +91,23 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
         item = self._get_item(pk)
         if item is None:
             return self._not_found()
-        data = request.get_json(silent=True) or {}
-        hook = (self.hooks or {}).get('before_update')
-        if hook is not None:
-            result = hook(item, data)
-            if result is not None:
-                data = result
+        raw_data = request.get_json(silent=True) or {}
+        pre_ctx = self.build_hook_context('update', pk=pk, item=item, data=raw_data)
+        data = self.run_hook('before_load', raw_data, item, ctx=pre_ctx) or {}
         try:
             loaded = self.load_with_schema(data, instance=item, partial=True)
         except ValidationError as err:
             return self._validation_error(err)
         instance = self.normalize_loaded(loaded, instance=item)
+        ctx = self.build_hook_context(
+            'update', pk=pk, item=instance, data=data, loaded=loaded
+        )
+        instance = self.run_hook('before_update', instance, data, ctx=ctx)
+        ctx.item = ctx.instance = instance
         error = self._commit('Could not update record')
         if error:
             return error
-        instance = self.run_hook('after_update', instance)
+        instance = self.run_hook('after_update', instance, data, ctx=ctx)
         return (
             self.envelope_response(self.dump_with_schema(instance)),
             self.response_code.get('update', 200),
@@ -108,11 +117,12 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
         item = self._get_item(pk)
         if item is None:
             return self._not_found()
-        item = self.run_hook('before_delete', item)
+        ctx = self.build_hook_context('delete', pk=pk, item=item)
+        item = self.run_hook('before_delete', item, ctx=ctx)
         error = self._commit('Could not delete record', delete=item)
         if error:
             return error
-        self.run_hook('after_delete', item)
+        self.run_hook('after_delete', item, ctx=ctx)
         status = self.response_code.get('delete', 200)
         if status == 204:
             return Response(status=204)
