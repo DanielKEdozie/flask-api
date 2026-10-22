@@ -75,7 +75,8 @@ def _lookup(spec, raw, explicit_db=None):
 
 def register_route(resource, path, methods=('GET',), schemas=None,
                    validate=True, detail=False, route_params=None,
-                   resolve_params=None, value_name=None, decorators=()):
+                   resolve_params=None, value_name=None, decorators=(),
+                   docs=None, endpoint_name=None):
     """Return a decorator mounting ``fn(schema, ctx)`` as a custom route
     on ``resource`` (see ``ApiResource.route``)."""
     instance = resource.api_instance
@@ -86,10 +87,11 @@ def register_route(resource, path, methods=('GET',), schemas=None,
         )
     methods = [m.upper() for m in methods]
     app_or_bp = instance.app_or_bp
-    parent_base = (
-        resource.path or resource.resource_name
+    res_name = (
+        resource.resource_name
         or resource._resolve_resource_name(None)
-    ).strip('/')
+    )
+    parent_base = (resource.path or res_name).strip('/')
     prefix = resource._resolve_prefix(app_or_bp, resource.route_prefix)
     path = path.strip('/')
     resolve_params = dict(resolve_params or {})
@@ -117,7 +119,9 @@ def register_route(resource, path, methods=('GET',), schemas=None,
     value_param = unmapped[0] if unmapped else next(iter(route_params), None)
 
     def decorator(fn):
-        endpoint = re.sub(r'\W+', '_', f'{parent_base}_{fn.__name__}')
+        suffix = endpoint_name or fn.__name__
+        base_ep = re.sub(r'\W+', '_', res_name if not resource.path else parent_base)
+        endpoint = re.sub(r'\W+', '_', f'{base_ep}_{suffix}')
 
         @wraps(fn)
         @json_response
@@ -168,6 +172,22 @@ def register_route(resource, path, methods=('GET',), schemas=None,
                 return fn(schema, ctx)
 
             return res._run_decorated(None, handler, extra=decorators)
+
+        if not hasattr(resource, '_custom_routes') or resource._custom_routes is getattr(resource.__mro__[1], '_custom_routes', None):
+            resource._custom_routes = list(getattr(resource, '_custom_routes', ()))
+        resource._custom_routes.append({
+            'path': path,
+            'url': url,
+            'methods': methods,
+            'schemas': schemas,
+            'validate': validate,
+            'detail': detail,
+            'route_params': route_params,
+            'decorators': decorators,
+            'docs': docs,
+            'endpoint': endpoint,
+            'fn': fn,
+        })
 
         app_or_bp.add_url_rule(
             url, endpoint=f'{endpoint}_view', view_func=view, methods=methods

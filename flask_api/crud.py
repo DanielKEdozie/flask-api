@@ -82,7 +82,7 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
             self.response_code.get('create', 201),
         )
 
-    def handle_update(self, pk):
+    def handle_update(self, pk, *, action='update'):
         item = self._get_item(pk)
         if item is None:
             return self._not_found()
@@ -92,16 +92,22 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
         except ValidationError as err:
             return self._validation_error(err)
         instance = self.normalize_loaded(loaded, instance=item)
-        ctx = QueryContext(self, action='update', pk=pk)
+        ctx = QueryContext(self, action=action, pk=pk)
         instance = self.run_hook('before_update', instance, data, ctx)
         error = self._commit('Could not update record')
         if error:
             return error
         instance = self.run_hook('after_update', instance, ctx)
+        status = self.response_code.get(
+            action, self.response_code.get('update', 200)
+        )
         return (
             self.envelope_response(self.dump_with_schema(instance)),
-            self.response_code.get('update', 200),
+            status,
         )
+
+    def handle_patch(self, pk):
+        return self.handle_update(pk, action='patch')
 
     def handle_delete(self, pk):
         item = self._get_item(pk)

@@ -20,38 +20,6 @@ class ApiResource(MethodView, ResourceCRUDMixin):
 
     Created and mounted through ``Api(app_or_bp, db=db, **defaults)`` via
     ``api.create_resource(...)`` or ``api.create_resources(...)``.
-
-    Configurable knobs:
-        - model / schema: SQLAlchemy model and Marshmallow schema
-        - db: SQLAlchemy extension instance (inherited from ``Api(api_bp, db=db)``
-          or auto-discovered from ``current_app.extensions['sqlalchemy']``)
-        - resource_name: url segment (defaults to model ``__tablename__``)
-        - route_prefix: url prefix for the generated routes
-        - decorators: view-wide decorators (applied to every method)
-        - pk_field: lookup attribute, default ``'id'``
-        - pk_type: werkzeug url converter for the detail route, default ``'int'``;
-          pass e.g. ``'string'`` or ``'uuid'`` (or None for no converter) with
-          non-integer pk_field values
-        - envelope_key: key the payload is wrapped in, default None
-        - items_key: list items wrapper key, default ``'items'``
-        - paginate / page_size / max_page_size: list pagination controls
-        - hooks: ``{'before_save'|'after_save'|'before_update'|'after_update'|
-          'before_delete'|'after_delete': callable}``
-        - filter_fields: list of model field names the client may filter
-          on with exact match (``?field=value``)
-        - filter_types: ``{field: type}`` value caster per filter field
-        - search_fields: fields matched with ``?search=`` using OR'ed ilike
-        - sort_fields: whitelist for ``?sort=`` (any model column when empty)
-        - default_sort_field / sort_order: fallback sort configuration
-        - _query: ``{'list'|'item'|'show'|'detail': callable(query, ctx)}``
-        - eager_loads: ``[(eager_loader, relationship_field)]`` or
-          ``[selectinload(Model.rel)]`` or ``['rel_name']``
-        - response_code: ``{'list'|'item'|'create'|'update'|'delete': status}``
-        - view_overrides: ``{'list'|'item'|'show'|'create'|'update'|'delete':
-          callable}`` — called as ``fn(view, pk)``
-        - method_decorators: a bare decorator (every action), an action
-          mapping ``{'list'|'item'|'show'|'create'|'update'|'delete'|'all':
-          decorator or [decorators]}`` or a collection mixing both
     """
 
     model = None
@@ -76,20 +44,69 @@ class ApiResource(MethodView, ResourceCRUDMixin):
         'show': None,
         'create': None,
         'update': None,
+        'patch': None,
         'delete': None,
     }
     method_decorators = ()
+    endpoint_names = {}
+    docs = {}
     path = None
     route_params = {}
     resolve_params = {}
     singleton = False
     detail = True
     api_instance = None
+    _custom_routes = ()
 
-    ALL_ACTIONS = ('list', 'item', 'create', 'update', 'delete')
-    ACTION_ALIASES = {'show': 'item', 'detail': 'item', 'patch': 'update', 'put': 'update'}
+    ALL_ACTIONS = ('list', 'item', 'create', 'update', 'patch', 'delete')
 
-    MERGED_OPTIONS = ('filter_types', 'view_overrides', 'errors', 'response_code')
+    DEFAULT_ENDPOINT_NAMES = {
+        'list': 'list',
+        'item': 'retrieve',
+        'create': 'create',
+        'update': 'update',
+        'patch': 'patch',
+        'delete': 'delete',
+    }
+
+    ACTION_ALIASES = {
+        # Collection GET
+        'list': 'list',
+        'get_list': 'list',
+        'get_collection': 'list',
+        'collection': 'list',
+        # Detail GET
+        'item': 'item',
+        'detail': 'item',
+        'retrieve': 'item',
+        'show': 'item',
+        'get': 'item',
+        'get_item': 'item',
+        'get_one': 'item',
+        'get_single': 'item',
+        # Collection POST
+        'create': 'create',
+        'post': 'create',
+        # Detail PUT
+        'update': 'update',
+        'put': 'update',
+        # Detail PATCH
+        'patch': 'patch',
+        'patch_update': 'patch',
+        'partial_update': 'patch',
+        # Detail DELETE
+        'delete': 'delete',
+        'destroy': 'delete',
+    }
+
+    MERGED_OPTIONS = (
+        'filter_types',
+        'view_overrides',
+        'errors',
+        'response_code',
+        'endpoint_names',
+        'docs',
+    )
 
     FACTORY_OPTIONS = (
         'model', 'schema', 'db', 'resource_name', 'route_prefix', 'decorators',
@@ -98,7 +115,7 @@ class ApiResource(MethodView, ResourceCRUDMixin):
         'search_fields', 'sort_fields', 'default_sort_field', 'sort_order',
         'eager_loads', 'view_overrides', 'method_decorators', 'errors',
         'response_code', '_query', 'path', 'route_params', 'resolve_params',
-        'singleton', 'detail',
+        'singleton', 'detail', 'endpoint_names', 'docs',
     )
 
     # --- options/factory wiring --------------------------------------
@@ -113,6 +130,45 @@ class ApiResource(MethodView, ResourceCRUDMixin):
         self.route_context = {}
 
     @classmethod
+    def resolve_action_name(cls, key, *, allow_all=False) -> str:
+        """Resolve any action or HTTP-verb alias (case-insensitive) to its canonical action name."""
+        if not isinstance(key, str):
+            raise ValueError(f'Action name must be a string, got {key!r}')
+        cleaned = key.strip().lower().replace('-', '_')
+        if allow_all and cleaned in ('all', '*'):
+            return 'all'
+        resolved = cls.ACTION_ALIASES.get(cleaned)
+        if resolved is None:
+            raise ValueError(f'Unknown method action: {key}')
+        return resolved
+
+    @classmethod
+    def _normalize_action_dict(cls, mapping: dict) -> dict:
+        if not isinstance(mapping, dict):
+            return {}
+        normalized = {}
+        for k, v in mapping.items():
+            canonical = cls.resolve_action_name(k)
+            normalized[canonical] = v
+        return normalized
+
+    @classmethod
+    def resolve_endpoint_names(cls) -> dict[str, str]:
+        """Return the resolved ``{action: endpoint_suffix}`` mapping for this resource."""
+        resolved = dict(cls.DEFAULT_ENDPOINT_NAMES)
+        custom = getattr(cls, 'endpoint_names', None) or {}
+        if isinstance(custom, dict):
+            for k, val in custom.items():
+                if not val:
+                    continue
+                canonical = cls.resolve_action_name(k)
+                resolved[canonical] = str(val).strip()
+                if canonical == 'update' and 'patch' not in custom and 'PATCH' not in custom and 'patch_update' not in custom and 'partial_update' not in custom:
+                    # Keep patch distinct by default unless user explicitly aliases it
+                    pass
+        return resolved
+
+    @classmethod
     def _validate_config(cls):
         if cls.model is None:
             raise ValueError(f'{cls.__name__} requires a model')
@@ -122,13 +178,17 @@ class ApiResource(MethodView, ResourceCRUDMixin):
     @classmethod
     def _seed_options(cls, options):
         """Map factory kwargs onto subclass attributes."""
-        attrs = {}
+        attrs = {'_custom_routes': []}
         schema = options.get('schema')
         if schema is not None:
             attrs['schema'] = schema() if isinstance(schema, type) else schema
         for key in cls.MERGED_OPTIONS:
             if options.get(key):
-                attrs[key] = {**getattr(cls, key), **options[key]}
+                base_val = dict(getattr(cls, key) or {})
+                incoming = dict(options[key])
+                if key in ('view_overrides', 'response_code', 'endpoint_names'):
+                    incoming = cls._normalize_action_dict(incoming)
+                attrs[key] = {**base_val, **incoming}
         if options.get('_query'):
             attrs['_query'] = cls._normalize_query_hooks(options['_query'])
         if options.get('method_decorators') is not None:
@@ -144,14 +204,14 @@ class ApiResource(MethodView, ResourceCRUDMixin):
     @classmethod
     def _normalize_query_hooks(cls, mapping):
         """Validate ``_query`` into ``{action: callable(query, ctx)}`` for
-        the list/item actions (``show`` and ``detail`` alias to ``item``)."""
+        the list/item actions."""
         if not isinstance(mapping, dict):
             raise ValueError(
                 '_query must be an action -> callable(query, ctx) mapping'
             )
         normalized = {}
         for key, hook in mapping.items():
-            action = cls.ACTION_ALIASES.get(key, key)
+            action = cls.resolve_action_name(key)
             if action not in ResourceQueryMixin.QUERY_HOOK_ACTIONS:
                 raise ValueError(f'Unknown _query action: {key}')
             if not callable(hook):
@@ -253,54 +313,105 @@ class ApiResource(MethodView, ResourceCRUDMixin):
     @classmethod
     def route(cls, path, methods=('GET',), schemas=None, validate=True,
               detail=False, route_params=None, resolve_params=None,
-              value_name=None, decorators=()):
+              value_name=None, decorators=(), docs=None, endpoint_name=None):
         """Decorator adding a custom endpoint to this resource."""
         return register_route(
             cls, path, methods=methods, schemas=schemas, validate=validate,
             detail=detail, route_params=route_params,
             resolve_params=resolve_params, value_name=value_name,
-            decorators=decorators,
+            decorators=decorators, docs=docs, endpoint_name=endpoint_name,
         )
 
     @classmethod
     def _mount(cls, app_or_bp, resource_name=None, route_prefix=None,
                list_methods=None, detail_methods=None,
                detail_pk_converter=None):
-        """Register list + detail routes on an app or blueprint."""
+        """Register list + detail routes on an app or blueprint with ``{resource_name}_{endpoint_name}`` endpoints."""
         cls._validate_config()
         name = resource_name or cls.resource_name or cls._resolve_resource_name(None)
         prefix = cls._resolve_prefix(app_or_bp, route_prefix)
         base = (cls.path or name).strip('/')
-        endpoint = re.sub(r'\W+', '_', base) if cls.path else name
+        base_endpoint = re.sub(r'\W+', '_', name if resource_name or cls.resource_name else base)
 
-        view = cls.as_view(f'{endpoint}_view')
+        ep_names = cls.resolve_endpoint_names()
+        cls.endpoints = {}
+
+        def _register_action_rules(url_rule: str, method_to_action: list[tuple[str, str]]):
+            grouped: dict[str, list[str]] = {}
+            for http_method, act in method_to_action:
+                suffix = ep_names.get(act, act)
+                ep = f'{base_endpoint}_{suffix}' if suffix else base_endpoint
+                cls.endpoints[act] = ep
+                grouped.setdefault(ep, []).append(http_method)
+
+            last_view = None
+            for ep, methods_for_ep in grouped.items():
+                v_func = cls.as_view(ep)
+                app_or_bp.add_url_rule(
+                    url_rule,
+                    endpoint=ep,
+                    view_func=v_func,
+                    methods=methods_for_ep,
+                )
+                last_view = v_func
+            return last_view
+
+        collection_url = f'{prefix}/{base}'
 
         if cls.singleton:
-            methods = list_methods or detail_methods or (
-                'GET', 'POST', 'PUT', 'PATCH', 'DELETE'
+            allowed = set(
+                m.upper()
+                for m in (
+                    list_methods
+                    or detail_methods
+                    or ('GET', 'POST', 'PUT', 'PATCH', 'DELETE')
+                )
             )
-            app_or_bp.add_url_rule(
-                f'{prefix}/{base}', view_func=view, methods=list(methods)
-            )
-            return view
+            pairs = [
+                (m, a)
+                for m, a in (
+                    ('GET', 'item'),
+                    ('POST', 'create'),
+                    ('PUT', 'update'),
+                    ('PATCH', 'patch'),
+                    ('DELETE', 'delete'),
+                )
+                if m in allowed
+            ]
+            return _register_action_rules(collection_url, pairs)
 
         if list_methods is None:
             list_methods = ('GET', 'POST')
         if detail_methods is None:
             detail_methods = ('GET', 'PUT', 'PATCH', 'DELETE') if cls.detail else ()
 
+        view = None
         if list_methods:
-            app_or_bp.add_url_rule(
-                f'{prefix}/{base}', view_func=view, methods=list(list_methods)
-            )
+            allowed_list = {m.upper() for m in list_methods}
+            list_pairs = [
+                (m, a)
+                for m, a in (('GET', 'list'), ('POST', 'create'))
+                if m in allowed_list
+            ]
+            view = _register_action_rules(collection_url, list_pairs)
+
         if detail_methods:
             converter = detail_pk_converter or cls.pk_type
             pk_part = f'<{converter}:pk>' if converter else '<pk>'
-            app_or_bp.add_url_rule(
-                f'{prefix}/{base}/{pk_part}',
-                view_func=view,
-                methods=list(detail_methods),
-            )
+            detail_url = f'{prefix}/{base}/{pk_part}'
+            allowed_detail = {m.upper() for m in detail_methods}
+            detail_pairs = [
+                (m, a)
+                for m, a in (
+                    ('GET', 'item'),
+                    ('PUT', 'update'),
+                    ('PATCH', 'patch'),
+                    ('DELETE', 'delete'),
+                )
+                if m in allowed_detail
+            ]
+            view = _register_action_rules(detail_url, detail_pairs)
+
         return view
 
     def _resolve_route_params(self):
@@ -340,6 +451,7 @@ class ApiResource(MethodView, ResourceCRUDMixin):
             'item': self.handle_detail,
             'create': lambda pk: self.handle_create(),
             'update': self.handle_update,
+            'patch': self.handle_patch,
             'delete': self.handle_delete,
         }
 
@@ -390,11 +502,17 @@ class ApiResource(MethodView, ResourceCRUDMixin):
 
     @classmethod
     def normalize_method_decorators(cls, source):
-        """Normalize ``method_decorators`` into per-action lists."""
+        """Normalize ``method_decorators`` into per-action lists.
+
+        If ``update`` (or ``PUT``) decorators are specified and ``patch`` is not
+        explicitly specified, ``patch`` inherits the ``update`` decorators.
+        """
         normalized = {action: [] for action in cls.ALL_ACTIONS}
         normalized['all'] = []
+        explicit_patch = False
 
         def add(action_key, decorators):
+            nonlocal explicit_patch
             keys = (action_key,) if isinstance(action_key, str) else tuple(action_key)
             if not isinstance(decorators, (list, tuple, set)):
                 decorators = [decorators] if callable(decorators) else []
@@ -403,9 +521,9 @@ class ApiResource(MethodView, ResourceCRUDMixin):
                     f'method_decorators for {action_key} must be callables'
                 )
             for key in keys:
-                action = cls.ACTION_ALIASES.get(key, key)
-                if action not in cls.ALL_ACTIONS and action != 'all':
-                    raise ValueError(f'Unknown method action: {key}')
+                action = cls.resolve_action_name(key, allow_all=True)
+                if action == 'patch':
+                    explicit_patch = True
                 normalized[action].extend(decorators)
 
         entries = source if isinstance(source, (list, tuple, set)) else [source]
@@ -413,6 +531,11 @@ class ApiResource(MethodView, ResourceCRUDMixin):
             if callable(entry):
                 add('all', [entry])
             elif isinstance(entry, dict):
+                # Check if entry is already a normalized dict with all ALL_ACTIONS
+                if set(entry.keys()) >= set(cls.ALL_ACTIONS) and 'all' in entry:
+                    for k, v in entry.items():
+                        normalized[k] = list(v)
+                    return normalized
                 for action_key, decorators in entry.items():
                     add(action_key, decorators)
             elif entry is not None:
@@ -420,6 +543,10 @@ class ApiResource(MethodView, ResourceCRUDMixin):
                     'method_decorators must be a decorator, an action mapping '
                     'or a collection of both'
                 )
+
+        if not explicit_patch and normalized['update']:
+            normalized['patch'] = list(normalized['update'])
+
         return normalized
 
     # --- HTTP verbs ----------------------------------------------------
@@ -450,7 +577,7 @@ class ApiResource(MethodView, ResourceCRUDMixin):
     @validate_json
     @json_response
     def patch(self, pk=None, **kwargs):
-        return self.dispatch('update', pk, self._override('update'))
+        return self.dispatch('patch', pk, self._override('patch', 'update'))
 
     @json_response
     def delete(self, pk=None, **kwargs):

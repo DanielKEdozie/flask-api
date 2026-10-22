@@ -435,7 +435,7 @@ api = Api(
 
 ### Overriding Default CRUD Actions (`view_overrides`)
 
-Replace any built-in handler (`list`, `item`, `create`, `update`, `delete`) with a custom function `fn(view, pk)`:
+Replace any built-in handler (`list`, `item`/`retrieve`, `create`, `update`, `patch`/`patch_update`, `delete`) with a custom function `fn(view, pk)`:
 
 ```python
 product_api = api.create_resources(
@@ -450,3 +450,127 @@ product_api = api.create_resources(
     },
 )
 ```
+
+---
+
+## Action Aliases & Custom Endpoint Names (`endpoint_names`)
+
+### 1. Flexible Action & HTTP-Verb Aliases (Case-Insensitive)
+
+Across `method_decorators`, `view_overrides`, `response_code`, `_query`, `endpoint_names`, and `docs['resources']`, you can use either **REST action names** or **HTTP verb names** (case-insensitive):
+
+| Canonical Action | HTTP Route | Accepted Aliases (Case-Insensitive) |
+| :--- | :--- | :--- |
+| **`list`** | `GET /<resource>` | `'list'`, `'get_list'`, `'get_collection'`, `'collection'`, `'GET_LIST'`, `'GET_COLLECTION'` |
+| **`item`** | `GET /<resource>/<pk>` | `'item'`, `'retrieve'`, `'detail'`, `'show'`, `'get'`, `'get_item'`, `'get_one'`, `'get_single'`, `'GET'` |
+| **`create`** | `POST /<resource>` | `'create'`, `'post'`, `'POST'` |
+| **`update`** | `PUT /<resource>/<pk>` | `'update'`, `'put'`, `'PUT'` *(also acts as fallback for `PATCH` if `patch` is not specified separately)* |
+| **`patch`** | `PATCH /<resource>/<pk>` | `'patch'`, `'patch_update'`, `'partial_update'`, `'PATCH'` |
+| **`delete`** | `DELETE /<resource>/<pk>` | `'delete'`, `'destroy'`, `'DELETE'` |
+
+### 2. Custom Flask Endpoint Names (`{resource_name}_{endpoint_name}`)
+
+By default, each resource registers distinct Flask route endpoints named `{resource_name}_{action}` (`products_list`, `products_retrieve`, `products_create`, `products_update`, `products_patch`, `products_delete`).
+
+Pass `endpoint_names={...}` (globally on `Api(...)` or per resource) to customize the endpoint suffix for `url_for()` and OpenAPI `operationId`:
+
+```python
+product_api = api.create_resources(
+    model=Product,
+    schema=ProductSchema,
+    resource_name='products',
+    endpoint_names={
+        'list': 'collection',
+        'retrieve': 'retrieve',
+        'create': 'create',
+        'update': 'update',
+        'patch': 'patch_update',
+        'delete': 'delete',
+    },
+)
+# Registers Flask endpoints:
+# - url_for('api.products_collection')            -> GET    /api/products
+# - url_for('api.products_create')                -> POST   /api/products
+# - url_for('api.products_retrieve', pk=1)        -> GET    /api/products/1
+# - url_for('api.products_update', pk=1)          -> PUT    /api/products/1
+# - url_for('api.products_patch_update', pk=1)    -> PATCH  /api/products/1
+# - url_for('api.products_delete', pk=1)          -> DELETE /api/products/1
+```
+
+---
+
+## Auto-Generated API Documentation (Swagger UI & ReDoc)
+
+Enable interactive **Swagger UI**, **ReDoc**, and **OpenAPI 3.0.3 (`openapi.json`)** generation directly on `Api(...)` or `api.init_app(...)`:
+
+```python
+api = Api(
+    api_bp,
+    db=db,
+    enable_docs=True,
+    doc=['swagger', 'redoc'],              # 'swagger', 'redoc', or ['swagger', 'redoc'] (alias: doc_ui=...)
+    docs={
+        'title': 'FoodMart API',
+        'version': '1.0.0',
+        'description': 'REST API for the FoodMart grocery marketplace.',
+        'openapi_url': '/openapi.json',    # Mounted on api_bp -> /api/openapi.json
+        'swagger_url': '/docs',            # Mounted on api_bp -> /api/docs
+        'redoc_url': '/redoc',             # Mounted on api_bp -> /api/redoc
+    },
+)
+```
+
+### Resource-Level & Action-Level `docs={...}`
+
+Schemas, query parameters (`filter_fields`, `search_fields`, `sort_fields`, pagination), path parameters, and authentication badges (`method_decorators`) are introspected automatically. You can customize tags, descriptions, and per-action metadata via `docs={...}`:
+
+```python
+product_api = api.create_resources(
+    model=Product,
+    schema=ProductSchema,
+    filter_fields=['in_stock', 'category_id'],
+    search_fields=['name'],
+    sort_fields=['id', 'name', 'price'],
+    docs={
+        'tag': 'Products',
+        'description': 'Manage store catalog products.',
+        'resources': {
+            'list': {
+                'summary': 'List catalog products',
+                'description': 'Returns a paginated list of products with filtering and search.',
+            },
+            'retrieve': {
+                'summary': 'Get product details',
+            },
+            'create': {
+                'tag': 'Admin - Products',
+                'summary': 'Create a new product',
+            },
+            'patch_update': {
+                'summary': 'Partially update a product',
+            },
+            'delete': {
+                'summary': 'Delete a product',
+            },
+        },
+    },
+)
+```
+
+Custom `@resource.route(...)` endpoints are also included automatically and accept `docs={...}`:
+
+```python
+@product_api.route(
+    'discount',
+    methods=['POST'],
+    detail=True,
+    schemas=DiscountSchema,
+    docs={
+        'tag': 'Products',
+        'summary': 'Apply percentage discount to a product',
+    },
+)
+def discount_product(schema, ctx):
+    ...
+```
+
