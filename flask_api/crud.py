@@ -81,7 +81,7 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
         error = self._commit('Could not create record', add=instance)
         if error:
             return error
-        instance = self.run_hook('after_save', instance, data, ctx=ctx)
+        instance = self.run_hook('after_save', instance, ctx=ctx)
         return (
             self.envelope_response(self.dump_with_schema(instance)),
             self.response_code.get('create', 201),
@@ -107,7 +107,7 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
         error = self._commit('Could not update record')
         if error:
             return error
-        instance = self.run_hook('after_update', instance, data, ctx=ctx)
+        instance = self.run_hook('after_update', instance, ctx=ctx)
         return (
             self.envelope_response(self.dump_with_schema(instance)),
             self.response_code.get('update', 200),

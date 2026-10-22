@@ -98,9 +98,9 @@ class ResourceHookMixin:
         3. ``before_save(item, data, ctx)`` / ``before_update(item, data, ctx)``
            (runs after schema loads and populates ``item``, before ``session.commit()``)
         4. ``session.commit()``
-        5. ``after_save(item, data, ctx)`` / ``after_update(item, data, ctx)``
-           (runs after ``session.commit()``)
-        6. ``before_delete(item, ctx)`` -> ``session.commit()`` -> ``after_delete(item, ctx)``
+        5. ``after_save(item[, ctx])`` / ``after_update(item[, ctx])``
+           (runs after ``session.commit()`` with the committed instance)
+        6. ``before_delete(item[, ctx])`` -> ``session.commit()`` -> ``after_delete(item[, ctx])``
 
     Hooks can accept ``(item, data, ctx)``, ``(item, data)``, or ``(item)`` —
     ``run_hook`` inspects the callable's signature and passes the matching arguments.
