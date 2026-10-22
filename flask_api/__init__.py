@@ -2,7 +2,7 @@ from .crud import ResourceCRUDMixin
 from .database import PaginationResult, get_db, get_session, paginate_statement
 from .decorators import json_response, validate_json
 from .factory import Api, ApiInstance, ResourceFactory
-from .hooks import HookContext, ResourceHookMixin
+from .hooks import ResourceHookMixin
 from .query import QueryContext, ResourceQueryMixin
 from .resource import ApiResource
 from .routes import RouteContext, register_route
@@ -12,7 +12,6 @@ __all__ = [
     'Api',
     'ApiInstance',
     'ApiResource',
-    'HookContext',
     'PaginationResult',
     'QueryContext',
     'ResourceCRUDMixin',
