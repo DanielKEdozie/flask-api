@@ -268,25 +268,32 @@ api.create_resources(
 
 ## Lifecycle Hooks (`hooks`)
 
-Run custom logic before or after `create`, `update`, and `delete` operations:
+Run custom logic before or after `create`, `update`, and `delete` operations. Both `before_save` and `before_update` run **after** `schema.load()` has validated the payload and hydrated `item`, and every hook receives `ctx` ([`QueryContext`](file:///c:/Users/danni/OneDrive/Desktop/project-3/foodmart/packages/flask-api/flask_api/query.py#L15-L78), exposing `ctx.args`, `ctx.pk`, `ctx.view`, `ctx.model`, `ctx.schema`, and resolved parent route params):
 
-- `before_save(data: dict) -> dict | None`: Receives raw JSON dict before schema validation; return modified dict (or `None` to keep original).
-- `after_save(instance) -> instance | None`: Receives committed model instance after creation.
-- `before_update(instance, data: dict) -> dict | None`: Receives existing model instance and incoming JSON dict before validation.
-- `after_update(instance) -> instance | None`: Receives committed model instance after update.
-- `before_delete(instance) -> instance | None`: Receives model instance before deletion.
-- `after_delete(instance) -> None`: Receives deleted model instance after commit.
+- `before_save(item, data: dict, ctx) -> item | dict | None`: Receives the instantiated (uncommitted) `item` populated with `schema.load()` values, the validated `data` dict, and `ctx`. Mutate `item` in-place, return a dict of extra attributes to set, or return a replacement instance.
+- `after_save(item, ctx) -> item | None`: Receives the committed model instance `item` and `ctx` after creation.
+- `before_update(item, data: dict, ctx) -> item | dict | None`: Receives the existing `item` with `schema.load(partial=True)` values already applied, the validated `data` dict, and `ctx`.
+- `after_update(item, ctx) -> item | None`: Receives the committed model instance `item` and `ctx` after update.
+- `before_delete(item, ctx) -> item | None`: Receives the model instance `item` and `ctx` before deletion.
+- `after_delete(item, ctx) -> None`: Receives the deleted model instance `item` and `ctx` after commit.
+
+*(Hooks with narrower legacy arities are also supported automatically via signature inspection.)*
 
 ```python
 from slugify import slugify
+
+def set_product_slug(item, data, ctx):
+    if 'name' in data:
+        item.slug = slugify(data['name'])
 
 product_api = api.create_resources(
     model=Product,
     schema=ProductSchema,
     hooks={
-        'before_save': lambda data: {**data, 'slug': slugify(data.get('name', ''))},
-        'after_save': lambda product: print(f'Created product #{product.id}') or product,
-        'before_update': lambda product, data: {**data, 'slug': slugify(data['name'])} if 'name' in data else data,
+        'before_save': set_product_slug,
+        'after_save': lambda item, ctx: print(f'Created product #{item.id}'),
+        'before_update': set_product_slug,
+        'after_update': lambda item, ctx: print(f'Updated product #{item.id}'),
     },
 )
 ```
