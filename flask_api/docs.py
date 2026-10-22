@@ -328,8 +328,22 @@ def build_openapi_spec(api) -> dict[str, Any]:
 
     bp_prefix = ''
     app_or_bp = getattr(api, 'app_or_bp', None)
-    if isinstance(app_or_bp, Blueprint) and getattr(app_or_bp, 'url_prefix', None):
-        bp_prefix = '/' + app_or_bp.url_prefix.strip('/')
+    if isinstance(app_or_bp, Blueprint):
+        if getattr(app_or_bp, 'url_prefix', None):
+            bp_prefix = '/' + app_or_bp.url_prefix.strip('/')
+        else:
+            try:
+                from flask import current_app
+                if current_app:
+                    spec_ep = f"{app_or_bp.name}.openapi_spec"
+                    rules = current_app.url_map._rules_by_endpoint.get(spec_ep)
+                    if rules:
+                        rule_str = rules[0].rule
+                        suffix = '/' + (docs_cfg.get('openapi_url') or '/openapi.json').strip('/')
+                        if rule_str.endswith(suffix):
+                            bp_prefix = rule_str[:-len(suffix)]
+            except Exception:
+                pass
 
     paths: dict[str, dict[str, Any]] = {}
     tags_by_name: dict[str, dict[str, Any]] = {}
