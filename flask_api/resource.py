@@ -50,6 +50,7 @@ class ApiResource(MethodView, ResourceCRUDMixin):
     method_decorators = ()
     endpoint_names = {}
     docs = {}
+    methods = None
     path = None
     route_params = {}
     resolve_params = {}
@@ -115,7 +116,7 @@ class ApiResource(MethodView, ResourceCRUDMixin):
         'search_fields', 'sort_fields', 'default_sort_field', 'sort_order',
         'eager_loads', 'view_overrides', 'method_decorators', 'errors',
         'response_code', '_query', 'path', 'route_params', 'resolve_params',
-        'singleton', 'detail', 'endpoint_names', 'docs',
+        'singleton', 'detail', 'endpoint_names', 'docs', 'methods',
     )
 
     # --- options/factory wiring --------------------------------------
@@ -167,6 +168,46 @@ class ApiResource(MethodView, ResourceCRUDMixin):
                     # Keep patch distinct by default unless user explicitly aliases it
                     pass
         return resolved
+
+    @classmethod
+    def resolve_exposed_actions(cls) -> set[str]:
+        """Return the set of exposed actions ('list', 'item', 'create', 'update', 'patch', 'delete').
+
+        If ``cls.methods`` is None, defaults to all actions based on ``singleton`` and ``detail``.
+        """
+        if cls.methods is None:
+            if cls.singleton:
+                return {'item', 'create', 'update', 'patch', 'delete'}
+            exposed = {'list', 'create'}
+            if cls.detail:
+                exposed.update({'item', 'update', 'patch', 'delete'})
+            return exposed
+
+        raw_methods = cls.methods
+        if isinstance(raw_methods, str):
+            raw_methods = [raw_methods]
+
+        exposed = set()
+        for m in raw_methods:
+            if not isinstance(m, str):
+                continue
+            cleaned = m.strip().lower().replace('-', '_')
+            if cleaned == 'get':
+                if cls.singleton:
+                    exposed.add('item')
+                else:
+                    exposed.add('list')
+                    if cls.detail:
+                        exposed.add('item')
+            elif cleaned in ('head', 'options'):
+                continue
+            else:
+                try:
+                    action = cls.resolve_action_name(cleaned)
+                    exposed.add(action)
+                except ValueError:
+                    pass
+        return exposed
 
     @classmethod
     def _validate_config(cls):
@@ -357,6 +398,7 @@ class ApiResource(MethodView, ResourceCRUDMixin):
             return last_view
 
         collection_url = f'{prefix}/{base}'
+        exposed = cls.resolve_exposed_actions()
 
         if cls.singleton:
             allowed = set(
@@ -376,8 +418,10 @@ class ApiResource(MethodView, ResourceCRUDMixin):
                     ('PATCH', 'patch'),
                     ('DELETE', 'delete'),
                 )
-                if m in allowed
+                if m in allowed and a in exposed
             ]
+            if not pairs:
+                return None
             return _register_action_rules(collection_url, pairs)
 
         if list_methods is None:
@@ -391,9 +435,10 @@ class ApiResource(MethodView, ResourceCRUDMixin):
             list_pairs = [
                 (m, a)
                 for m, a in (('GET', 'list'), ('POST', 'create'))
-                if m in allowed_list
+                if m in allowed_list and a in exposed
             ]
-            view = _register_action_rules(collection_url, list_pairs)
+            if list_pairs:
+                view = _register_action_rules(collection_url, list_pairs)
 
         if detail_methods:
             converter = detail_pk_converter or cls.pk_type
@@ -408,9 +453,12 @@ class ApiResource(MethodView, ResourceCRUDMixin):
                     ('PATCH', 'patch'),
                     ('DELETE', 'delete'),
                 )
-                if m in allowed_detail
+                if m in allowed_detail and a in exposed
             ]
-            view = _register_action_rules(detail_url, detail_pairs)
+            if detail_pairs:
+                detail_view = _register_action_rules(detail_url, detail_pairs)
+                if view is None:
+                    view = detail_view
 
         return view
 
@@ -458,6 +506,9 @@ class ApiResource(MethodView, ResourceCRUDMixin):
     def dispatch(self, action, pk, override):
         """Resolve and invoke the handler or override for an action,
         applying shared + per-action ``method_decorators`` first."""
+        exposed = self.resolve_exposed_actions()
+        if action not in exposed:
+            return self.error_response(405, message=f'Method not allowed for action: {action}')
         if override:
             def handler():
                 error = self._resolve_route_params()

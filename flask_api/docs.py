@@ -442,6 +442,7 @@ def build_openapi_spec(api) -> dict[str, Any]:
             else f'{collection_rule}/{pk_part}'
         )
 
+        exposed_actions = resource.resolve_exposed_actions()
         action_Method_and_rule: list[tuple[str, str, str]] = []
         if resource.singleton:
             action_Method_and_rule.extend([
@@ -463,6 +464,11 @@ def build_openapi_spec(api) -> dict[str, Any]:
                     ('patch', 'patch', detail_rule),
                     ('delete', 'delete', detail_rule),
                 ])
+        action_Method_and_rule = [
+            (act, method, rule)
+            for act, method, rule in action_Method_and_rule
+            if act in exposed_actions
+        ]
 
         default_summaries = {
             'list': f'List {_humanize_name(res_name).lower()}',

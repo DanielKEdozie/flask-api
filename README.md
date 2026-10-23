@@ -186,6 +186,9 @@ resources = api.create_resources(
 | `hooks` | `{}` | Lifecycle hooks (`before_save`, `after_save`, `before_update`, `after_update`, `before_delete`, `after_delete`). |
 | `_query` | `{}` | Per-action query modifiers (`{'list': fn, 'item': fn}`). |
 | `method_decorators` | `()` | Decorators applied to all or specific CRUD actions. |
+| `methods` | `None` | Whitelist of HTTP methods or action names to expose (e.g. `['GET', 'POST']` or `['list', 'retrieve', 'create']`). Excludes all others (405). |
+| `endpoint_names` | `{}` | Custom per-action endpoint suffixes for `url_for` and OpenAPI `operationId` (e.g. `{'list': 'collection'}`). |
+| `docs` | `{}` | OpenAPI/Swagger documentation metadata (`tag`, `description`, `resources={'list': {...}}`). |
 | `view_overrides` | `{}` | Custom handler functions overriding `list`, `item`, `create`, `update`, or `delete`. |
 | `response_code` | `{}` | Override default HTTP status codes per action (`{'delete': 204}` returns an empty 204 body). |
 | `errors` | `{}` | Custom error formatters keyed by HTTP status code (`404`) or exception class (`ValidationError`). |
@@ -495,6 +498,28 @@ product_api = api.create_resources(
 # - url_for('api.products_update', pk=1)          -> PUT    /api/products/1
 # - url_for('api.products_patch_update', pk=1)    -> PATCH  /api/products/1
 # - url_for('api.products_delete', pk=1)          -> DELETE /api/products/1
+```
+
+### 3. Exposing Specific Methods (`methods=[...]`)
+
+By default, all CRUD actions (`list`, `create`, `retrieve`, `update`, `patch`, `delete`) are enabled. Pass `methods=[...]` to expose only a specific whitelist of actions or HTTP verbs:
+
+```python
+# Expose only read-only endpoints (GET /categories and GET /categories/<pk>)
+category_api = api.create_resources(
+    model=Category,
+    schema=CategorySchema,
+    methods=['GET'],  # or ['list', 'retrieve']
+)
+
+# Expose only list and create (no detail route /<pk> mounted)
+category_api = api.create_resources(
+    model=Category,
+    schema=CategorySchema,
+    methods=['GET_LIST', 'POST'],  # or ['list', 'create']
+)
+
+# Any unexposed method returns 405 Method Not Allowed and is excluded from Swagger/OpenAPI docs
 ```
 
 ---
