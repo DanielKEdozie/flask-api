@@ -387,27 +387,29 @@ def build_openapi_spec(api) -> dict[str, Any]:
                 tags_by_name[t_name]['description'] = tag_desc
 
         # Register component schemas for this resource
-        schema_base_name = getattr(getattr(resource, 'schema', None).__class__, '__name__', f'{model_label}Schema')
-        if schema_base_name.endswith('Schema') and len(schema_base_name) > 6:
-            schema_base_name = schema_base_name[:-6]
+        def _get_or_create_component(schema_obj, *, mode: str = 'response', partial: bool = False, suffix: str = '') -> dict[str, str] | None:
+            if schema_obj is None:
+                return None
+            schema_inst = schema_obj() if isinstance(schema_obj, type) else schema_obj
+            schema_cls = schema_inst.__class__
+            name = getattr(schema_cls, '__name__', 'Schema')
+            if name.endswith('Schema') and len(name) > 6:
+                clean_name = name[:-6]
+            else:
+                clean_name = name
+            if not clean_name or clean_name == 'Schema':
+                clean_name = model_label
+            comp_name = f"{clean_name}{suffix}"
+            if comp_name not in schemas_components:
+                schemas_components[comp_name] = marshmallow_schema_to_openapi(
+                    schema_inst, mode=mode, partial=partial
+                )
+            return {'$ref': f'#/components/schemas/{comp_name}'}
 
-        resp_schema_name = f'{schema_base_name}Response'
-        req_schema_name = f'{schema_base_name}Request'
-        patch_schema_name = f'{schema_base_name}PatchRequest'
-
-        schemas_components[resp_schema_name] = marshmallow_schema_to_openapi(
-            resource.schema, mode='response'
-        )
-        schemas_components[req_schema_name] = marshmallow_schema_to_openapi(
-            resource.schema, mode='request', partial=False
-        )
-        schemas_components[patch_schema_name] = marshmallow_schema_to_openapi(
-            resource.schema, mode='request', partial=True
-        )
-
-        item_ref = {'$ref': f'#/components/schemas/{resp_schema_name}'}
-        req_ref = {'$ref': f'#/components/schemas/{req_schema_name}'}
-        patch_ref = {'$ref': f'#/components/schemas/{patch_schema_name}'}
+        if getattr(resource, 'schema', None) is not None:
+            _get_or_create_component(resource.schema, mode='response', suffix='Response')
+            _get_or_create_component(resource.schema, mode='request', partial=False, suffix='Request')
+            _get_or_create_component(resource.schema, mode='request', partial=True, suffix='PatchRequest')
 
         # Normalize per-action docs inside resource `docs={'resources': {...}}` or `docs={'actions': {...}}`
         raw_per_action = (
@@ -608,9 +610,21 @@ def build_openapi_spec(api) -> dict[str, Any]:
                 )
             )
 
+            req_schema_obj = (
+                resource.resolve_schema(action, mode='load')
+                if hasattr(resource, 'resolve_schema')
+                else getattr(resource, 'schema', None)
+            )
+            resp_schema_obj = (
+                resource.resolve_schema(action, mode='dump')
+                if hasattr(resource, 'resolve_schema')
+                else getattr(resource, 'schema', None)
+            )
+            resp_ref = _get_or_create_component(resp_schema_obj, mode='response', suffix='Response') or {'type': 'object'}
+
             if action == 'list':
                 resp_body_schema = _wrap_list_schema(
-                    item_ref,
+                    resp_ref,
                     getattr(resource, 'items_key', 'items') or 'items',
                     bool(getattr(resource, 'paginate', True)),
                 )
@@ -621,7 +635,7 @@ def build_openapi_spec(api) -> dict[str, Any]:
                 }
             else:
                 resp_body_schema = _wrap_envelope_schema(
-                    item_ref, getattr(resource, 'envelope_key', None)
+                    resp_ref, getattr(resource, 'envelope_key', None)
                 )
 
             responses: dict[str, Any] = {
@@ -658,7 +672,14 @@ def build_openapi_spec(api) -> dict[str, Any]:
                 operation['deprecated'] = True
 
             if action in ('create', 'update', 'patch'):
-                body_ref = patch_ref if action == 'patch' else req_ref
+                if action == 'patch':
+                    body_ref = _get_or_create_component(
+                        req_schema_obj, mode='request', partial=True, suffix='PatchRequest'
+                    ) or {'type': 'object'}
+                else:
+                    body_ref = _get_or_create_component(
+                        req_schema_obj, mode='request', partial=False, suffix='Request'
+                    ) or {'type': 'object'}
                 operation['requestBody'] = {
                     'required': True,
                     'content': {

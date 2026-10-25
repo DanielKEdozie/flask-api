@@ -127,7 +127,7 @@ class Api:
 
     def create_resources(self, *resources, **options):
         """Create and mount one or more API resources."""
-        if not resources and ('model' in options or 'schema' in options):
+        if not resources and ('model' in options or 'schema' in options or 'schemas' in options):
             return self.create_resource(**options)
 
         if len(resources) == 1 and isinstance(resources[0], (list, tuple)):
@@ -145,7 +145,7 @@ class Api:
             return created
 
         raise ValueError(
-            'create_resources() expects resource options (model=..., schema=...) '
+            'create_resources() expects resource options (model=..., schema=... / schemas=...) '
             'or one or more resource configuration dictionaries.'
         )
 
@@ -158,9 +158,9 @@ class Api:
             resource.db = self.db
         if self.app_or_bp is None:
             self._pending_resources.append((resource, mount_options))
-            return resource
-        return resource.register(self.app_or_bp, **mount_options)
+        else:
+            resource.register(self.app_or_bp, **mount_options)
+        return self
 
 
-# Backwards-compatible alias
 ApiInstance = Api

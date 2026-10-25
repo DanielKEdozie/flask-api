@@ -17,17 +17,18 @@ class ResourceSchemaMixin:
     def _session(self):
         return get_session(explicit_db=getattr(self, 'db', None))
 
-    def load_with_schema(self, data, instance=None, partial=False):
+    def load_with_schema(self, data, instance=None, partial=False, action=None):
+        schema = self.resolve_schema(action=action, mode='load') if hasattr(self, 'resolve_schema') else self.schema
         kwargs = {'partial': partial}
-        load_params = inspect.signature(self.schema.load).parameters
+        load_params = inspect.signature(schema.load).parameters
         accepts_var_kw = any(
             p.kind == inspect.Parameter.VAR_KEYWORD
             for p in load_params.values()
         )
-        if instance is not None and ('instance' in load_params or hasattr(self.schema, 'instance') or accepts_var_kw):
+        if instance is not None and ('instance' in load_params or hasattr(schema, 'instance') or accepts_var_kw):
             kwargs['instance'] = instance
-        if 'session' in load_params or hasattr(self.schema, 'session'):
-            session = getattr(self.schema, 'session', None)
+        if 'session' in load_params or hasattr(schema, 'session'):
+            session = getattr(schema, 'session', None)
             if session is None:
                 try:
                     session = self._session()
@@ -35,10 +36,11 @@ class ResourceSchemaMixin:
                     session = None
             if session is not None and 'session' in load_params:
                 kwargs['session'] = session
-        return self.schema.load(data, **kwargs)
+        return schema.load(data, **kwargs)
 
-    def dump_with_schema(self, instance, many=False):
-        return self.schema.dump(instance, many=many)
+    def dump_with_schema(self, instance, many=False, action=None):
+        schema = self.resolve_schema(action=action, mode='dump') if hasattr(self, 'resolve_schema') else self.schema
+        return schema.dump(instance, many=many)
 
     def envelope_response(self, data):
         key = self.envelope_key

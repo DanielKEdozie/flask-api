@@ -58,7 +58,7 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
         if item is None:
             return self._not_found()
         return (
-            self.envelope_response(self.dump_with_schema(item)),
+            self.envelope_response(self.dump_with_schema(item, action='item')),
             self.response_code.get('item', 200),
         )
 
@@ -67,7 +67,7 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
             return self.error_response(409, message='Record already exists')
         data = request.get_json(silent=True) or {}
         try:
-            loaded = self.load_with_schema(data)
+            loaded = self.load_with_schema(data, action='create')
         except ValidationError as err:
             return self._validation_error(err)
         instance = self._bind_scope(self.normalize_loaded(loaded))
@@ -78,7 +78,7 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
             return error
         instance = self.run_hook('after_save', instance, ctx)
         return (
-            self.envelope_response(self.dump_with_schema(instance)),
+            self.envelope_response(self.dump_with_schema(instance, action='create')),
             self.response_code.get('create', 201),
         )
 
@@ -88,7 +88,7 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
             return self._not_found()
         data = request.get_json(silent=True) or {}
         try:
-            loaded = self.load_with_schema(data, instance=item, partial=True)
+            loaded = self.load_with_schema(data, instance=item, partial=True, action=action)
         except ValidationError as err:
             return self._validation_error(err)
         instance = self.normalize_loaded(loaded, instance=item)
@@ -102,7 +102,7 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
             action, self.response_code.get('update', 200)
         )
         return (
-            self.envelope_response(self.dump_with_schema(instance)),
+            self.envelope_response(self.dump_with_schema(instance, action=action)),
             status,
         )
 

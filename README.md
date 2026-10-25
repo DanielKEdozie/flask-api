@@ -162,7 +162,8 @@ resources = api.create_resources(
 | Option | Default | Description |
 | :--- | :--- | :--- |
 | `model` | *Required* | SQLAlchemy 2.0+ model class. |
-| `schema` | *Required* | Marshmallow `Schema` class or instance. |
+| `schema` | `None` | Default Marshmallow `Schema` class or instance (required unless `schemas` is provided). |
+| `schemas` | `{}` | Per-action custom schema mapping (e.g. `{'list': ListSchema, 'retrieve': DetailSchema}`). |
 | `db` | Auto-detected | Optional Flask-SQLAlchemy `db` instance (auto-discovered from `current_app` if omitted). |
 | `resource_name` | `model.__tablename__` | URL segment and endpoint base name (e.g., `'products'`). |
 | `route_prefix` | `'/api'` (App) or `''` (Blueprint) | URL prefix prepended to the resource routes. |
@@ -192,6 +193,50 @@ resources = api.create_resources(
 | `view_overrides` | `{}` | Custom handler functions overriding `list`, `item`, `create`, `update`, or `delete`. |
 | `response_code` | `{}` | Override default HTTP status codes per action (`{'delete': 204}` returns an empty 204 body). |
 | `errors` | `{}` | Custom error formatters keyed by HTTP status code (`404`) or exception class (`ValidationError`). |
+
+---
+
+## Custom & Per-Action Schemas (`schemas`)
+
+By default, passing `schema=MySchema` applies that schema across all CRUD actions. You can use `schemas={...}` to provide specialized schemas for individual actions (e.g. lightweight summary schema for `list`, full schema for `retrieve`, separate request/response schemas for `create`, etc.):
+
+```python
+api.create_resources(
+    model=Product,
+    schemas={
+        # List GET: lightweight summary schema
+        'list': ProductListSchema,
+
+        # Detail GET: full record schema
+        'retrieve': ProductDetailSchema,
+
+        # Create POST: request schema for validation, response schema for serialization
+        'create': {'request': ProductCreateSchema, 'response': ProductDetailSchema},
+        # Or as a concise 2-tuple: (ProductCreateSchema, ProductDetailSchema)
+
+        # Update PUT: validates body & dumps response
+        'update': ProductUpdateSchema,
+
+        # Optional: PATCH automatically inherits 'update' if not explicitly provided
+        'patch': ProductPatchSchema,
+    },
+)
+```
+
+### Action Aliases & Case-Insensitive Keys
+Any standard action name or HTTP method verb can be used:
+- **List / Collection GET**: `'list'`, `'get_list'`, `'get_collection'`, `'collection'`, `'GET_LIST'`
+- **Detail / Single GET**: `'retrieve'`, `'item'`, `'detail'`, `'show'`, `'get'`, `'get_item'`, `'GET'`
+- **Create POST**: `'create'`, `'post'`, `'POST'`
+- **Update PUT**: `'update'`, `'put'`, `'PUT'`
+- **Partial Update PATCH**: `'patch'`, `'patch_update'`, `'partial_update'`, `'PATCH'`
+- **Delete**: `'delete'`, `'destroy'`, `'DELETE'`
+- **Fallback / Default**: `'default'`, `'*'`, or `'all'`
+
+### OpenAPI Docs Integration
+When `enable_docs=True` is enabled, OpenAPI / Swagger UI / ReDoc automatically discovers the exact schemas resolved for each action:
+- Registers corresponding components (e.g. `ProductListResponse`, `ProductDetailResponse`, `ProductCreateRequest`, `ProductUpdateRequest`, `ProductUpdatePatchRequest`).
+- Accurately links `$ref` schemas in Swagger UI and ReDoc for both request bodies and response payloads.
 
 ---
 

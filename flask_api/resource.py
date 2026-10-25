@@ -1,5 +1,6 @@
 import logging
 import re
+from functools import partial
 
 from flask import Flask, current_app, request
 from flask.views import MethodView
@@ -15,6 +16,17 @@ from .routes import register_route
 logger = logging.getLogger(__name__)
 
 
+class class_or_instance_method:
+    """Descriptor allowing a method to be called on either a class or an instance."""
+
+    def __init__(self, fn):
+        self.fn = fn
+
+    def __get__(self, instance, owner):
+        target = instance if instance is not None else owner
+        return partial(self.fn, target)
+
+
 class ApiResource(MethodView, ResourceCRUDMixin):
     """Generic SQLAlchemy 2.0+ CRUD resource (MethodView based).
 
@@ -24,6 +36,7 @@ class ApiResource(MethodView, ResourceCRUDMixin):
 
     model = None
     schema = None
+    schemas = {}
     db = None
     resource_name = None
     route_prefix = None
@@ -107,10 +120,11 @@ class ApiResource(MethodView, ResourceCRUDMixin):
         'response_code',
         'endpoint_names',
         'docs',
+        'schemas',
     )
 
     FACTORY_OPTIONS = (
-        'model', 'schema', 'db', 'resource_name', 'route_prefix', 'decorators',
+        'model', 'schema', 'schemas', 'db', 'resource_name', 'route_prefix', 'decorators',
         'paginate', 'page_size', 'max_page_size', 'pk_field', 'pk_type',
         'envelope_key', 'items_key', 'hooks', 'filter_fields', 'filter_types',
         'search_fields', 'sort_fields', 'default_sort_field', 'sort_order',
@@ -152,6 +166,79 @@ class ApiResource(MethodView, ResourceCRUDMixin):
             canonical = cls.resolve_action_name(k)
             normalized[canonical] = v
         return normalized
+
+    @classmethod
+    def _normalize_schemas_dict(cls, mapping: dict) -> dict:
+        """Normalize a ``schemas`` dictionary mapping action names to Schema classes, instances, or (req, resp) pairs."""
+        if not isinstance(mapping, dict):
+            return {}
+        normalized = {}
+        for key, val in mapping.items():
+            if not isinstance(key, str):
+                raise ValueError(f'Schema action key must be a string, got {key!r}')
+            cleaned = key.strip().lower().replace('-', '_')
+            if cleaned in ('all', '*', 'default'):
+                canonical = 'default'
+            else:
+                canonical = cls.resolve_action_name(cleaned)
+            normalized[canonical] = cls._normalize_schema_spec(val)
+        return normalized
+
+    @staticmethod
+    def _normalize_schema_spec(val):
+        def _inst(s):
+            if s is None:
+                return None
+            return s() if isinstance(s, type) else s
+
+        if isinstance(val, (tuple, list)) and len(val) == 2:
+            return {
+                'request': _inst(val[0]),
+                'response': _inst(val[1]),
+            }
+        if isinstance(val, dict):
+            req = val.get('request') or val.get('req') or val.get('load')
+            resp = val.get('response') or val.get('res') or val.get('resp') or val.get('dump')
+            return {
+                'request': _inst(req),
+                'response': _inst(resp),
+            }
+        return _inst(val)
+
+    @class_or_instance_method
+    def resolve_schema(self_or_cls, action=None, mode='dump'):
+        """Resolve schema instance for the given action and mode ('dump' or 'load')."""
+        schemas = getattr(self_or_cls, 'schemas', None) or {}
+        canonical = None
+        if action:
+            try:
+                canonical = self_or_cls.resolve_action_name(action)
+            except (ValueError, AttributeError):
+                canonical = str(action).strip().lower()
+
+        spec = None
+        if schemas:
+            if canonical and canonical in schemas:
+                spec = schemas[canonical]
+            elif canonical == 'patch' and 'update' in schemas:
+                spec = schemas['update']
+            elif 'default' in schemas:
+                spec = schemas['default']
+            elif 'all' in schemas:
+                spec = schemas['all']
+
+        if spec is not None:
+            if isinstance(spec, dict):
+                if mode in ('load', 'request', 'req'):
+                    target = spec.get('request') or spec.get('req') or spec.get('load') or spec.get('response') or spec.get('res')
+                else:
+                    target = spec.get('response') or spec.get('res') or spec.get('dump') or spec.get('request') or spec.get('req')
+                if target is not None:
+                    return target() if isinstance(target, type) else target
+            return spec() if isinstance(spec, type) else spec
+
+        fallback = getattr(self_or_cls, 'schema', None)
+        return fallback() if isinstance(fallback, type) else fallback
 
     @classmethod
     def resolve_endpoint_names(cls) -> dict[str, str]:
@@ -213,8 +300,8 @@ class ApiResource(MethodView, ResourceCRUDMixin):
     def _validate_config(cls):
         if cls.model is None:
             raise ValueError(f'{cls.__name__} requires a model')
-        if cls.schema is None:
-            raise ValueError(f'{cls.__name__} requires a schema')
+        if cls.schema is None and not cls.schemas:
+            raise ValueError(f'{cls.__name__} requires a schema or schemas')
 
     @classmethod
     def _seed_options(cls, options):
@@ -229,6 +316,8 @@ class ApiResource(MethodView, ResourceCRUDMixin):
                 incoming = dict(options[key])
                 if key in ('view_overrides', 'response_code', 'endpoint_names'):
                     incoming = cls._normalize_action_dict(incoming)
+                elif key == 'schemas':
+                    incoming = cls._normalize_schemas_dict(incoming)
                 attrs[key] = {**base_val, **incoming}
         if options.get('_query'):
             attrs['_query'] = cls._normalize_query_hooks(options['_query'])
@@ -240,6 +329,21 @@ class ApiResource(MethodView, ResourceCRUDMixin):
         for key in cls.FACTORY_OPTIONS:
             if key not in special and options.get(key) is not None:
                 attrs[key] = options[key]
+
+        if attrs.get('schema') is None and attrs.get('schemas'):
+            norm_schemas = attrs['schemas']
+            first_spec = (
+                norm_schemas.get('default')
+                or norm_schemas.get('all')
+                or norm_schemas.get('item')
+                or norm_schemas.get('list')
+                or (next(iter(norm_schemas.values())) if norm_schemas else None)
+            )
+            if isinstance(first_spec, dict):
+                first_spec = first_spec.get('response') or first_spec.get('request')
+            if first_spec:
+                attrs['schema'] = first_spec() if isinstance(first_spec, type) else first_spec
+
         return attrs
 
     @classmethod

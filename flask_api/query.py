@@ -37,7 +37,10 @@ class QueryContext:
         self.pk = pk
         self.args = request.args
         self.model = getattr(view, 'model', None)
-        self.schema = getattr(view, 'schema', None)
+        if hasattr(view, 'resolve_schema'):
+            self.schema = view.resolve_schema(action=action)
+        else:
+            self.schema = getattr(view, 'schema', None)
         self.resource = view.__class__
         self.scope = getattr(view, 'scope', {})
         self.route_context = getattr(view, 'route_context', {})
@@ -222,7 +225,7 @@ class ResourceQueryMixin:
         session = self._session()
         if not flag:
             items = session.scalars(query).all()
-            return {items_key: self.dump_with_schema(items, many=True)}
+            return {items_key: self.dump_with_schema(items, many=True, action='list')}
         page = max(request.args.get('page', 1, type=int), 1)
         per_page = request.args.get('per_page', self.page_size, type=int)
         per_page = min(max(per_page, 1), self.max_page_size)
@@ -234,7 +237,7 @@ class ResourceQueryMixin:
             explicit_db=getattr(self, 'db', None),
         )
         return {
-            items_key: self.dump_with_schema(pagination.items, many=True),
+            items_key: self.dump_with_schema(pagination.items, many=True, action='list'),
             'meta': {
                 'page': pagination.page,
                 'per_page': pagination.per_page,
