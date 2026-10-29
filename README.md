@@ -316,8 +316,15 @@ api.create_resources(
 
 ## Lifecycle Hooks (`hooks`)
 
-Run custom logic before or after `create`, `update`, and `delete` operations. Both `before_save` and `before_update` run **after** `schema.load()` has validated the payload and hydrated `item`, and every hook receives `ctx` ([`QueryContext`](file:///c:/Users/danni/OneDrive/Desktop/project-3/foodmart/packages/flask-api/flask_api/query.py#L15-L78), exposing `ctx.args`, `ctx.pk`, `ctx.view`, `ctx.model`, `ctx.schema`, and resolved parent route params):
+Run custom logic before validation, after validation, or around persistence. Hooks receive `ctx` ([`QueryContext`](file:///c:/Users/danni/OneDrive/Desktop/project-3/foodmart/packages/flask-api/flask_api/query.py#L15-L78), exposing `ctx.args`, `ctx.pk`, `ctx.view`, `ctx.model`, `ctx.schema`, and resolved parent route params):
 
+### Pre-Validation Hooks (Before Instance Creation)
+- `before_load(data: dict, ctx) -> dict | None`: Runs on the raw input payload **before** `schema.load()`. Ideal for injecting required fields (e.g. `tenant_id`, `created_by_id`, or slugifying titles) before Marshmallow validation occurs. Mutate `data` in-place or return a new dict.
+- `before_create_load(data: dict, ctx) -> dict | None`: Action-specific pre-load hook for `create` (POST). Overrides `before_load` if both are defined.
+- `before_update_load(data: dict, ctx) -> dict | None`: Action-specific pre-load hook for `update`/`patch` (PUT/PATCH). Overrides `before_load` if both are defined.
+- `before_validate(data: dict, ctx)`: Alias for `before_load`.
+
+### Post-Validation & Persistence Hooks (On Model Instance)
 - `before_save(item, data: dict, ctx) -> item | dict | None`: Receives the instantiated (uncommitted) `item` populated with `schema.load()` values, the validated `data` dict, and `ctx`. Mutate `item` in-place, return a dict of extra attributes to set, or return a replacement instance.
 - `after_save(item, ctx) -> item | None`: Receives the committed model instance `item` and `ctx` after creation.
 - `before_update(item, data: dict, ctx) -> item | dict | None`: Receives the existing `item` with `schema.load(partial=True)` values already applied, the validated `data` dict, and `ctx`.

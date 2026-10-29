@@ -40,6 +40,24 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
             )
         return None
 
+    def _run_load_hook(self, action, data, ctx):
+        hooks = self.hooks or {}
+        # 1. Action-specific hook takes priority
+        action_candidates = [f'before_{action}_load', f'before_{action}_validate']
+        if action == 'patch':
+            action_candidates.extend(['before_update_load', 'before_update_validate'])
+
+        for cand in action_candidates:
+            if cand in hooks:
+                return self.run_hook(cand, data, ctx)
+
+        # 2. Fall back to general before_load / before_validate
+        for cand in ('before_load', 'before_validate'):
+            if cand in hooks:
+                return self.run_hook(cand, data, ctx)
+
+        return data
+
     def handle_list(self):
         query = sa.select(self.model)
         query = self._apply_eager(query)
@@ -66,13 +84,19 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
         if self.singleton and self._get_item(None) is not None:
             return self.error_response(409, message='Record already exists')
         data = request.get_json(silent=True) or {}
+        ctx = QueryContext(self, action='create')
         try:
+            data = self._run_load_hook('create', data, ctx)
             loaded = self.load_with_schema(data, action='create')
         except ValidationError as err:
             return self._validation_error(err)
         instance = self._bind_scope(self.normalize_loaded(loaded))
-        ctx = QueryContext(self, action='create')
-        instance = self.run_hook('before_save', instance, data, ctx)
+        hook_res = self.run_hook('before_save', instance, data, ctx)
+        if isinstance(hook_res, dict):
+            for k, v in hook_res.items():
+                setattr(instance, k, v)
+        elif hook_res is not None:
+            instance = hook_res
         error = self._commit('Could not create record', add=instance)
         if error:
             return error
@@ -87,13 +111,19 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
         if item is None:
             return self._not_found()
         data = request.get_json(silent=True) or {}
+        ctx = QueryContext(self, action=action, pk=pk)
         try:
+            data = self._run_load_hook(action, data, ctx)
             loaded = self.load_with_schema(data, instance=item, partial=True, action=action)
         except ValidationError as err:
             return self._validation_error(err)
         instance = self.normalize_loaded(loaded, instance=item)
-        ctx = QueryContext(self, action=action, pk=pk)
-        instance = self.run_hook('before_update', instance, data, ctx)
+        hook_res = self.run_hook('before_update', instance, data, ctx)
+        if isinstance(hook_res, dict):
+            for k, v in hook_res.items():
+                setattr(instance, k, v)
+        elif hook_res is not None:
+            instance = hook_res
         error = self._commit('Could not update record')
         if error:
             return error

@@ -2,9 +2,13 @@ import inspect
 
 
 class ResourceHookMixin:
-    """Lifecycle hooks around persistence.
+    """Lifecycle hooks around persistence and validation.
 
     Hook signatures:
+        - ``before_load(data, ctx)``
+        - ``before_create_load(data, ctx)``
+        - ``before_update_load(data, ctx)``
+        - ``before_validate(data, ctx)``
         - ``before_save(item, data, ctx)``
         - ``after_save(item, ctx)``
         - ``before_update(item, data, ctx)``
