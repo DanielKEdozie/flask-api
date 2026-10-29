@@ -40,8 +40,15 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
             )
         return None
 
-    def _run_load_hook(self, action, data, ctx):
+    def _run_load_hook(self, action, data, ctx, instance=None):
         hooks = self.hooks or {}
+        kwargs = {
+            'data': data,
+            'ctx': ctx,
+            'context': ctx,
+            'item': instance,
+            'instance': instance,
+        }
         # 1. Action-specific hook takes priority
         action_candidates = [f'before_{action}_load', f'before_{action}_validate']
         if action == 'patch':
@@ -49,12 +56,12 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
 
         for cand in action_candidates:
             if cand in hooks:
-                return self.run_hook(cand, data, ctx)
+                return self.run_hook(cand, data, instance, ctx, **kwargs)
 
         # 2. Fall back to general before_load / before_validate
         for cand in ('before_load', 'before_validate'):
             if cand in hooks:
-                return self.run_hook(cand, data, ctx)
+                return self.run_hook(cand, data, instance, ctx, **kwargs)
 
         return data
 
@@ -91,7 +98,16 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
         except ValidationError as err:
             return self._validation_error(err)
         instance = self._bind_scope(self.normalize_loaded(loaded))
-        hook_res = self.run_hook('before_save', instance, data, ctx)
+        hook_res = self.run_hook(
+            'before_save',
+            instance,
+            data,
+            ctx,
+            item=instance,
+            instance=instance,
+            data=data,
+            ctx=ctx,
+        )
         if isinstance(hook_res, dict):
             for k, v in hook_res.items():
                 setattr(instance, k, v)
@@ -100,7 +116,7 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
         error = self._commit('Could not create record', add=instance)
         if error:
             return error
-        instance = self.run_hook('after_save', instance, ctx)
+        instance = self.run_hook('after_save', instance, ctx, item=instance, instance=instance, ctx=ctx)
         return (
             self.envelope_response(self.dump_with_schema(instance, action='create')),
             self.response_code.get('create', 201),
@@ -111,14 +127,23 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
         if item is None:
             return self._not_found()
         data = request.get_json(silent=True) or {}
-        ctx = QueryContext(self, action=action, pk=pk)
+        ctx = QueryContext(self, action=action, pk=pk, instance=item)
         try:
-            data = self._run_load_hook(action, data, ctx)
+            data = self._run_load_hook(action, data, ctx, instance=item)
             loaded = self.load_with_schema(data, instance=item, partial=True, action=action)
         except ValidationError as err:
             return self._validation_error(err)
         instance = self.normalize_loaded(loaded, instance=item)
-        hook_res = self.run_hook('before_update', instance, data, ctx)
+        hook_res = self.run_hook(
+            'before_update',
+            instance,
+            data,
+            ctx,
+            item=instance,
+            instance=instance,
+            data=data,
+            ctx=ctx,
+        )
         if isinstance(hook_res, dict):
             for k, v in hook_res.items():
                 setattr(instance, k, v)
@@ -127,7 +152,7 @@ class ResourceCRUDMixin(ResourceSchemaMixin, ResourceQueryMixin, ResourceHookMix
         error = self._commit('Could not update record')
         if error:
             return error
-        instance = self.run_hook('after_update', instance, ctx)
+        instance = self.run_hook('after_update', instance, ctx, item=instance, instance=instance, ctx=ctx)
         status = self.response_code.get(
             action, self.response_code.get('update', 200)
         )

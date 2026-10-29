@@ -31,10 +31,12 @@ class QueryContext:
         - ``ctx.<binding>``: dynamic lookup for resolved parent bindings
     """
 
-    def __init__(self, view, action, pk=None):
+    def __init__(self, view, action, pk=None, instance=None):
         self.view = view
         self.action = action
         self.pk = pk
+        self.instance = instance
+        self.item = instance
         self.args = request.args
         self.model = getattr(view, 'model', None)
         if hasattr(view, 'resolve_schema'):

@@ -319,9 +319,9 @@ api.create_resources(
 Run custom logic before validation, after validation, or around persistence. Hooks receive `ctx` ([`QueryContext`](file:///c:/Users/danni/OneDrive/Desktop/project-3/foodmart/packages/flask-api/flask_api/query.py#L15-L78), exposing `ctx.args`, `ctx.pk`, `ctx.view`, `ctx.model`, `ctx.schema`, and resolved parent route params):
 
 ### Pre-Validation Hooks (Before Instance Creation)
-- `before_load(data: dict, ctx) -> dict | None`: Runs on the raw input payload **before** `schema.load()`. Ideal for injecting required fields (e.g. `tenant_id`, `created_by_id`, or slugifying titles) before Marshmallow validation occurs. Mutate `data` in-place or return a new dict.
+- `before_load(data: dict, instance=None, ctx=None) -> dict | None`: Runs on the raw input payload **before** `schema.load()`. On `update`/`patch`, `instance` is the existing database record being modified (or `None` on `create`). Ideal for injecting required fields (e.g. `tenant_id`, `created_by_id`, or slugifying titles) before Marshmallow validation occurs.
 - `before_create_load(data: dict, ctx) -> dict | None`: Action-specific pre-load hook for `create` (POST). Overrides `before_load` if both are defined.
-- `before_update_load(data: dict, ctx) -> dict | None`: Action-specific pre-load hook for `update`/`patch` (PUT/PATCH). Overrides `before_load` if both are defined.
+- `before_update_load(data: dict, instance, ctx) -> dict | None`: Action-specific pre-load hook for `update`/`patch` (PUT/PATCH). Receives the existing database model `instance` (also accessible as `ctx.instance` or `item`). Overrides `before_load` if both are defined.
 - `before_validate(data: dict, ctx)`: Alias for `before_load`.
 
 ### Post-Validation & Persistence Hooks (On Model Instance)
