@@ -1,4 +1,5 @@
 from .docs import build_openapi_spec, mount_api_docs, normalize_doc_targets
+from .errors import install_request_id_hooks
 
 
 class ResourceFactory:
@@ -62,14 +63,29 @@ class Api:
         self.defaults = {}
         if db is not None:
             self.defaults['db'] = db
-        for key, value in defaults.items():
-            if value is not None and key in ApiResource.FACTORY_OPTIONS:
-                self.defaults[key] = value
+        self.defaults.update(self._check_defaults(defaults))
         self.resources = []
         self._pending_resources = []
 
+        if self.app_or_bp is not None:
+            install_request_id_hooks(self.app_or_bp)
         if self.app_or_bp is not None and self.enable_docs:
             mount_api_docs(self, self.app_or_bp)
+
+    @staticmethod
+    def _check_defaults(defaults):
+        """Validate Api-level defaults; unknown keys are configuration typos."""
+        from .resource import ApiResource  # deferred: avoids import cycle
+
+        unknown = sorted(
+            key for key in defaults if key not in ApiResource.FACTORY_OPTIONS
+        )
+        if unknown:
+            raise ValueError(
+                f'Unknown Api option(s): {", ".join(unknown)}. '
+                f'Allowed options: {", ".join(ApiResource.FACTORY_OPTIONS)}'
+            )
+        return {key: value for key, value in defaults.items() if value is not None}
 
     def init_app(self, app_or_bp, db=None, enable_docs=None,
                  docs=None, doc=None, doc_ui=None, **defaults):
@@ -90,10 +106,9 @@ class Api:
 
         if 'errors' in defaults:
             self.errors.update(defaults.pop('errors') or {})
-        for key, value in defaults.items():
-            if value is not None and key in self._resource_base.FACTORY_OPTIONS:
-                self.defaults[key] = value
+        self.defaults.update(self._check_defaults(defaults))
 
+        install_request_id_hooks(self.app_or_bp)
         if self.enable_docs:
             mount_api_docs(self, self.app_or_bp)
 
