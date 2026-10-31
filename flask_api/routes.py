@@ -161,7 +161,9 @@ def register_route(resource, path, methods=('GET',), schemas=None,
                 schema = _pick_schema(schemas, request.method, resource.schema)
                 if validate and request.method in BODY_METHODS:
                     if not request.is_json:
-                        return {'message': 'Request must be JSON'}, 400
+                        return res.error_response(
+                            400, message='Request must be JSON', code='json_required'
+                        )
                     ctx.json = request.get_json(silent=True) or {}
                     try:
                         ctx.data = schema.load(

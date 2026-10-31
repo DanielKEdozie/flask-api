@@ -18,6 +18,9 @@ Declarative **SQLAlchemy 2.0+** and **Marshmallow** REST CRUD resources for Flas
 10. [Nested Subresources & Singletons (`create_subresource`)](#nested-subresources--singletons-create_subresource)
 11. [Custom Endpoints (`@resource.route`)](#custom-endpoints-resourceroute)
 12. [Error Formatting & View Overrides](#error-formatting--view-overrides)
+13. [Stable Error Contract & Request IDs](#stable-error-contract--request-ids)
+14. [Conditional Requests (ETag / If-Match)](#conditional-requests-etag--if-match)
+15. [Idempotent Creates](#idempotent-creates)
 
 ---
 
@@ -177,6 +180,7 @@ resources = api.create_resources(
 | `paginate` | `True` | Paginate list responses by default (clients can toggle via `?paginate=false`). |
 | `page_size` | `10` | Default items per page (`?per_page=`). |
 | `max_page_size` | `50` | Maximum allowed `?per_page=` value. |
+| `max_unpaginated` | `1000` | Safety limit for `?paginate=false`; larger result sets raise `400 unpaginated_response_too_large`. Set to `None` to disable. |
 | `filter_fields` | `()` | Whitelist of model column names allowed for exact-match filtering (`?field=value`). |
 | `filter_types` | `{}` | Mapping of `{field: callable}` type casters for filter values (e.g., `{'in_stock': bool, 'category_id': int}`). |
 | `search_fields` | `()` | Model string column names searched with case-insensitive `ILIKE` via `?search=term`. |
@@ -184,7 +188,7 @@ resources = api.create_resources(
 | `default_sort_field` | `''` | Default column used to sort list queries when `?sort=` is omitted. |
 | `sort_order` | `'asc'` | Default sort direction (`'asc'` or `'desc'`), overridden via `?sort_order=desc`. |
 | `eager_loads` | `()` | Eager loading specifications applied to list and detail queries. |
-| `hooks` | `{}` | Lifecycle hooks (`before_save`, `after_save`, `before_update`, `after_update`, `before_delete`, `after_delete`). |
+| `hooks` | `{}` | Lifecycle hooks (`before_save`, `after_save`, `before_update`, `after_update`, `before_delete`, `after_delete`). Factory hooks are merged with hooks defined on the resource subclass. |
 | `_query` | `{}` | Per-action query modifiers (`{'list': fn, 'item': fn}`). |
 | `method_decorators` | `()` | Decorators applied to all or specific CRUD actions. |
 | `methods` | `None` | Whitelist of HTTP methods or action names to expose (e.g. `['GET', 'POST']` or `['list', 'retrieve', 'create']`). Excludes all others (405). |
@@ -192,7 +196,16 @@ resources = api.create_resources(
 | `docs` | `{}` | OpenAPI/Swagger documentation metadata (`tag`, `description`, `resources={'list': {...}}`). |
 | `view_overrides` | `{}` | Custom handler functions overriding `list`, `item`, `create`, `update`, or `delete`. |
 | `response_code` | `{}` | Override default HTTP status codes per action (`{'delete': 204}` returns an empty 204 body). |
-| `errors` | `{}` | Custom error formatters keyed by HTTP status code (`404`) or exception class (`ValidationError`). |
+| `errors` | `{}` | Custom error formatters keyed by HTTP status code (`404`) or exception class (`ValidationError`). Handlers are matched along the exception MRO. |
+| `etag_enabled` | `True` | Emit `ETag` on detail/write responses and honor `If-None-Match` (304) and `If-Match` (412). |
+| `require_if_match` | `False` | Require `If-Match` on updates and deletes, returning `428` when missing. |
+| `idempotency_store` | `None` | Store with `reserve`/`complete`/`release`; enables `Idempotency-Key` replay for creates. |
+| `idempotency_header` | `'Idempotency-Key'` | Request header carrying the idempotency key. |
+| `idempotency_ttl` | `86400` | Seconds a completed idempotent response is retained. |
+| `idempotency_scope` | `None` | Optional `() -> str` identity used to scope keys (defaults to `g.current_user` / `g.user`). |
+| `error_docs_url` | `None` | Base URL exposed as `error.documentation_url` in default error payloads. |
+
+Legacy aliases are still accepted: `pagination_item_key` → `items_key`, `apply_eager` → `eager_loads`, and `default_sort_order` → `sort_order`. Unknown options now raise `ValueError` instead of being silently ignored.
 
 ---
 
@@ -505,6 +518,107 @@ product_api = api.create_resources(
     },
 )
 ```
+
+---
+
+## Stable Error Contract & Request IDs
+
+Every default error keeps the historical top-level `message` and adds a machine-readable `error` object. Request IDs are assigned (or propagated from `X-Request-ID`) automatically and echoed back on every response.
+
+```json
+{
+  "message": "Record not found",
+  "error": {
+    "code": "not_found",
+    "request_id": "4f1c9a0e8c2b4d6fa1e3b7c5d9f0a2b4",
+    "documentation_url": "https://api.example.com/errors#not_found"
+  }
+}
+```
+
+Validation failures include the field messages in `error.details`:
+
+```json
+{
+  "message": "Validation error",
+  "error": {
+    "code": "validation_error",
+    "details": {"price": ["Missing data for required field."]},
+    "request_id": "4f1c9a0e8c2b4d6fa1e3b7c5d9f0a2b4"
+  }
+}
+```
+
+Stable codes include `bad_request`, `validation_error`, `not_found`, `conflict` (including `IntegrityError` → `409`), `precondition_failed`, `precondition_required`, `idempotency_key_reuse`, `idempotency_in_progress`, `unpaginated_response_too_large`, and `internal_error`.
+
+Set `error_docs_url` to add `documentation_url` links:
+
+```python
+api.create_resource(model=Product, schema=ProductSchema, error_docs_url='https://api.example.com/errors')
+```
+
+Raise `ApiError` from hooks, overrides, or custom routes to produce the same contract with custom status, code, details, and headers:
+
+```python
+from flask_api import ApiError
+
+raise ApiError(409, 'out_of_stock', 'Only 2 units remain', details={'available': 2})
+```
+
+Custom handlers registered in `errors={...}` still take precedence.
+
+---
+
+## Conditional Requests (ETag / If-Match)
+
+Detail reads and write responses include an `ETag` derived from the serialized representation (including eager-loaded relations).
+
+- `GET /api/products/1` → `200` with `ETag: "…"`
+- `GET /api/products/1` with `If-None-Match: "…"` → `304 Not Modified` (empty body)
+- `PUT`/`PATCH`/`DELETE` with a stale `If-Match` → `412 Precondition Failed`
+- Any existing record matches `If-Match: *`
+
+Enable strict optimistic concurrency by requiring the header on writes:
+
+```python
+api.create_resource(
+    model=Product,
+    schema=ProductSchema,
+    require_if_match=True,  # missing If-Match -> 428 Precondition Required
+)
+```
+
+ETags are disabled with `etag_enabled=False`.
+
+---
+
+## Idempotent Creates
+
+Supply an idempotency store to make `POST` retries safe. Requests are fingerprinted (method, path, query string, raw body, and caller identity). A successful response is cached for `idempotency_ttl` seconds and replayed with `Idempotent-Replayed: true`.
+
+```python
+from flask_api import Api, MemoryIdempotencyStore, RedisIdempotencyStore
+
+# Single process / tests
+store = MemoryIdempotencyStore()
+
+# Multi-worker deployments
+store = RedisIdempotencyStore(url='redis://localhost:6379/1')
+
+api = Api(api_bp, db=db, idempotency_store=store)
+```
+
+```bash
+curl -X POST https://api.example.com/products \
+  -H "Idempotency-Key: 6f1c1c2e-1f2b-4c3d-9e4f-1a2b3c4d5e6f" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Keyboard", "price": 49.9}'
+```
+
+- Reusing a key with a different payload → `409 idempotency_key_reuse`
+- Retrying while the first request is still running → `409 idempotency_in_progress` with `Retry-After: 1`
+- Non-2xx outcomes are not cached, so the key can be retried
+- Keys are scoped per user by default; supply `idempotency_scope=lambda: tenant_id` to scope differently
 
 ---
 

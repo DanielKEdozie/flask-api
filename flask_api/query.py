@@ -3,6 +3,7 @@ import sqlalchemy as sa
 from werkzeug.exceptions import BadRequest
 
 from .database import get_session, paginate_statement
+from .errors import ApiError
 
 
 def _escape_like(value: str) -> str:
@@ -96,6 +97,7 @@ class ResourceQueryMixin:
     filter_fields = ()
     filter_types = {}
     eager_loads = ()
+    max_unpaginated = 1000
     _query = {}
     scope = {}
     singleton = False
@@ -226,7 +228,21 @@ class ResourceQueryMixin:
         items_key = self.items_key or 'items'
         session = self._session()
         if not flag:
-            items = session.scalars(query).all()
+            limit = self.max_unpaginated
+            if limit is None:
+                items = session.scalars(query).all()
+            else:
+                # Fetch one extra row to detect overflow without counting.
+                items = list(session.scalars(query.limit(int(limit) + 1)).all())
+                if len(items) > limit:
+                    raise ApiError(
+                        400,
+                        'unpaginated_response_too_large',
+                        f'This collection is too large to return without '
+                        f'pagination (limit {limit}); use paginate=true or '
+                        f'narrow the query.',
+                        details={'max_unpaginated': limit},
+                    )
             return {items_key: self.dump_with_schema(items, many=True, action='list')}
         page = max(request.args.get('page', 1, type=int), 1)
         per_page = request.args.get('per_page', self.page_size, type=int)

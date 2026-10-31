@@ -9,7 +9,9 @@ from werkzeug.exceptions import HTTPException
 
 from .crud import ResourceCRUDMixin
 from .decorators import json_response, validate_json
+from .errors import ApiError, install_request_id_hooks
 from .factory import ResourceFactory
+from .idempotency import DEFAULT_TTL, IDEMPOTENCY_HEADER
 from .query import ResourceQueryMixin
 from .routes import register_route
 
@@ -72,6 +74,22 @@ class ApiResource(MethodView, ResourceCRUDMixin):
     api_instance = None
     _custom_routes = ()
 
+    # Unpaginated responses are capped; set to None to disable the guard.
+    max_unpaginated = 1000
+
+    # Conditional requests / optimistic concurrency
+    etag_enabled = True
+    require_if_match = False
+
+    # Idempotent creates (disabled until an ``idempotency_store`` is set)
+    idempotency_store = None
+    idempotency_header = IDEMPOTENCY_HEADER
+    idempotency_ttl = DEFAULT_TTL
+    idempotency_scope = None
+
+    # Base URL for per-error documentation links
+    error_docs_url = None
+
     ALL_ACTIONS = ('list', 'item', 'create', 'update', 'patch', 'delete')
 
     DEFAULT_ENDPOINT_NAMES = {
@@ -121,16 +139,26 @@ class ApiResource(MethodView, ResourceCRUDMixin):
         'endpoint_names',
         'docs',
         'schemas',
+        'hooks',
     )
+
+    OPTION_ALIASES = {
+        'pagination_item_key': 'items_key',
+        'apply_eager': 'eager_loads',
+        'default_sort_order': 'sort_order',
+    }
 
     FACTORY_OPTIONS = (
         'model', 'schema', 'schemas', 'db', 'resource_name', 'route_prefix', 'decorators',
-        'paginate', 'page_size', 'max_page_size', 'pk_field', 'pk_type',
+        'paginate', 'page_size', 'max_page_size', 'max_unpaginated', 'pk_field', 'pk_type',
         'envelope_key', 'items_key', 'hooks', 'filter_fields', 'filter_types',
         'search_fields', 'sort_fields', 'default_sort_field', 'sort_order',
         'eager_loads', 'view_overrides', 'method_decorators', 'errors',
         'response_code', '_query', 'path', 'route_params', 'resolve_params',
         'singleton', 'detail', 'endpoint_names', 'docs', 'methods',
+        'etag_enabled', 'require_if_match',
+        'idempotency_store', 'idempotency_header', 'idempotency_ttl', 'idempotency_scope',
+        'error_docs_url',
     )
 
     # --- options/factory wiring --------------------------------------
@@ -302,6 +330,105 @@ class ApiResource(MethodView, ResourceCRUDMixin):
             raise ValueError(f'{cls.__name__} requires a model')
         if cls.schema is None and not cls.schemas:
             raise ValueError(f'{cls.__name__} requires a schema or schemas')
+        if cls.require_if_match and not cls.etag_enabled:
+            raise ValueError(
+                f'{cls.__name__}: require_if_match requires etag_enabled=True'
+            )
+
+    @classmethod
+    def _validate_options(cls, options):
+        """Reject unknown options and invalid values before a resource is built."""
+        unknown = sorted(set(options) - set(cls.FACTORY_OPTIONS) - {'name'})
+        if unknown:
+            raise ValueError(
+                f'Unknown resource option(s): {", ".join(unknown)}. '
+                f'Allowed options: {", ".join(cls.FACTORY_OPTIONS)}'
+            )
+
+        def _positive_int(key):
+            value = options.get(key)
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value < 1
+            ):
+                raise ValueError(f'{key} must be an integer >= 1')
+
+        for key in ('page_size', 'max_page_size', 'max_unpaginated', 'idempotency_ttl'):
+            _positive_int(key)
+
+        for key in ('paginate', 'singleton', 'detail', 'etag_enabled', 'require_if_match'):
+            value = options.get(key)
+            if value is not None and not isinstance(value, bool):
+                raise ValueError(f'{key} must be a boolean')
+
+        sort_order = options.get('sort_order')
+        if sort_order is not None and sort_order not in ('asc', 'desc'):
+            raise ValueError("sort_order must be 'asc' or 'desc'")
+
+        if options.get('require_if_match') and options.get('etag_enabled') is False:
+            raise ValueError('require_if_match requires etag_enabled=True')
+
+        resource_name = options.get('resource_name')
+        if resource_name is not None and (
+            not isinstance(resource_name, str) or not resource_name.strip()
+        ):
+            raise ValueError('resource_name must be a non-empty string')
+
+        for key in ('envelope_key', 'items_key', 'pk_field', 'path'):
+            value = options.get(key)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f'{key} must be a string')
+
+        pk_type = options.get('pk_type')
+        if pk_type is not None and not isinstance(pk_type, (str, type)):
+            raise ValueError('pk_type must be a converter name or a Python type')
+
+        hooks = options.get('hooks')
+        if hooks is not None:
+            if not isinstance(hooks, dict):
+                raise ValueError('hooks must be a dict mapping hook names to callables')
+            for name, hook in hooks.items():
+                if not isinstance(name, str) or not callable(hook):
+                    raise ValueError(
+                        f'Invalid hook {name!r}: hook names must be strings '
+                        f'mapped to callables'
+                    )
+
+        errors = options.get('errors')
+        if errors is not None:
+            if not isinstance(errors, dict):
+                raise ValueError('errors must be a dict mapping statuses or exceptions to callables')
+            for key, handler in errors.items():
+                valid_key = isinstance(key, int) or (
+                    isinstance(key, type) and issubclass(key, BaseException)
+                )
+                if not valid_key:
+                    raise ValueError(
+                        f'errors key must be a status code or exception class, got {key!r}'
+                    )
+                if not callable(handler):
+                    raise ValueError(f'errors handler for {key!r} must be callable')
+
+        store = options.get('idempotency_store')
+        if store is not None and not all(
+            hasattr(store, method) for method in ('reserve', 'complete', 'release')
+        ):
+            raise ValueError(
+                'idempotency_store must implement reserve(), complete() and release()'
+            )
+
+        header = options.get('idempotency_header')
+        if header is not None and (
+            not isinstance(header, str) or not header.strip()
+        ):
+            raise ValueError('idempotency_header must be a non-empty string')
+
+        scope = options.get('idempotency_scope')
+        if scope is not None and not callable(scope):
+            raise ValueError('idempotency_scope must be callable')
+
+        docs_url = options.get('error_docs_url')
+        if docs_url is not None and not isinstance(docs_url, str):
+            raise ValueError('error_docs_url must be a string')
 
     @classmethod
     def _seed_options(cls, options):
@@ -368,16 +495,17 @@ class ApiResource(MethodView, ResourceCRUDMixin):
     def create_resource(cls, **options):
         """Build a configured view class; no routes are mounted.
 
-        ``pagination_item_key`` is accepted as an alias for ``items_key``.
+        ``pagination_item_key``, ``apply_eager`` and ``default_sort_order``
+        are accepted as aliases for ``items_key``, ``eager_loads`` and
+        ``sort_order``. Unknown options raise ``ValueError`` instead of being
+        silently ignored.
         """
-        if 'pagination_item_key' in options:
-            alias = options.pop('pagination_item_key')
-            if alias is not None:
-                options.setdefault('items_key', alias)
-        if 'apply_eager' in options:
-            eager_alias = options.pop('apply_eager')
-            if eager_alias is not None:
-                options.setdefault('eager_loads', eager_alias)
+        for alias, target in cls.OPTION_ALIASES.items():
+            if alias in options:
+                value = options.pop(alias)
+                if value is not None:
+                    options.setdefault(target, value)
+        cls._validate_options(options)
         return ResourceFactory.create(cls, **options)
 
     @classmethod
@@ -473,6 +601,7 @@ class ApiResource(MethodView, ResourceCRUDMixin):
                detail_pk_converter=None):
         """Register list + detail routes on an app or blueprint with ``{resource_name}_{endpoint_name}`` endpoints."""
         cls._validate_config()
+        install_request_id_hooks(app_or_bp)
         name = resource_name or cls.resource_name or cls._resolve_resource_name(None)
         prefix = cls._resolve_prefix(app_or_bp, route_prefix)
         base = (cls.path or name).strip('/')
@@ -643,6 +772,14 @@ class ApiResource(MethodView, ResourceCRUDMixin):
             handler = dec(handler)
         try:
             return handler()
+        except ApiError as exc:
+            return self.error_response(
+                exc.status,
+                message=exc.message,
+                code=exc.code,
+                details=exc.details,
+                headers=exc.headers,
+            )
         except HTTPException as exc:
             return self.error_response(
                 exc.code or 400, error=exc, message=exc.description

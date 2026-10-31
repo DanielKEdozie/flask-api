@@ -2,6 +2,17 @@ from functools import wraps
 
 from flask import Response, jsonify, make_response, request
 
+from .errors import error_payload, get_request_id
+
+
+def _copy_headers(response, headers):
+    """Copy a mapping or iterable of ``(name, value)`` pairs onto ``response``."""
+    if headers:
+        items = headers.items() if hasattr(headers, 'items') else headers
+        for name, value in items:
+            response.headers.add(name, str(value))
+    return response
+
 
 def json_response(fn):
     """Normalize view return values into a JSON ``Response``.
@@ -31,20 +42,12 @@ def json_response(fn):
 
         if isinstance(body, Response):
             body.status_code = status
-            if headers:
-                body.headers.extend(headers)
-            return body
+            return _copy_headers(body, headers)
 
-        if status == 204 and (body is None or body == ''):
-            resp = Response(status=204)
-            if headers:
-                resp.headers.extend(headers)
-            return resp
+        if status == 304 or (status == 204 and (body is None or body == '')):
+            return _copy_headers(Response(status=status), headers)
 
-        resp = make_response(jsonify(body), status)
-        if headers:
-            resp.headers.extend(headers)
-        return resp
+        return _copy_headers(make_response(jsonify(body), status), headers)
 
     return wrapper
 
@@ -54,10 +57,18 @@ def validate_json(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
         if not request.is_json:
-            return jsonify({'message': 'Request must be JSON'}), 400
+            return jsonify(error_payload(
+                'Request must be JSON',
+                'json_required',
+                request_id=get_request_id(),
+            )), 400
         payload = request.get_json(silent=True)
         if payload is None:
-            return jsonify({'message': 'Invalid or malformed JSON body'}), 400
+            return jsonify(error_payload(
+                'Invalid or malformed JSON body',
+                'invalid_json',
+                request_id=get_request_id(),
+            )), 400
         return fn(*args, **kwargs)
 
     return wrapper

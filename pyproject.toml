@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flask-api"
-version = "0.1.0"
+version = "0.2.0"
 description = "Declarative SQLAlchemy 2.0+ and Marshmallow CRUD REST API resources for Flask"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,6 +16,29 @@ dependencies = [
     "marshmallow>=3.20.0",
 ]
 
+[project.optional-dependencies]
+redis = ["redis>=5.0.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "marshmallow-sqlalchemy>=1.0",
+    "ruff>=0.6",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["flask_api*"]
+
+[tool.setuptools.package-data]
+flask_api = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E9", "F"]
